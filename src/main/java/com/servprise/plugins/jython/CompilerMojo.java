@@ -17,6 +17,7 @@
 package com.servprise.plugins.jython;
 
 import java.io.File;
+import java.io.IOException;
 
 /**
  * Maven mojo to compile jython source files to Java class files.
@@ -48,7 +49,11 @@ public class CompilerMojo extends AbstractCompilerMojo
     
     public File getSourceDir()
     {
-        return sourceDir;
+        try {
+            return sourceDir.getCanonicalFile();
+        } catch (IOException e) {
+            return sourceDir;
+        }
     }
 
     public File getDestDir()
