@@ -17,6 +17,7 @@
 package com.servprise.plugins.jython;
 
 import java.io.File;
+import java.util.List;
 
 /**
  * Maven mojo to compile jython test source files to Java test class files.
@@ -46,9 +47,15 @@ public class TestCompilerMojo extends AbstractCompilerMojo
     private File destDir;
 
     
-    public File getSourceDir()
+    public List getSourceDirectories() throws Exception
     {
-        return sourceDir;
+        List<String> sources = project.getTestCompileSourceRoots();
+        //Quick fix in case the user has not added the "add-source" goal.
+        String jythonSourceDir = sourceDir.getCanonicalPath();
+        if(!sources.contains(jythonSourceDir)) {
+            sources.add(jythonSourceDir);
+        }
+        return sources;
     }
 
     public File getDestDir()

@@ -17,14 +17,17 @@
 package com.servprise.plugins.jython;
 
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.DependencyResolutionRequiredException;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.project.MavenProject;
+import org.codehaus.plexus.util.DirectoryScanner;
 
 import java.io.*;
+import java.util.List;
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 
 /**
  * Base set of functionality for concrete mojos to compile
@@ -72,14 +75,20 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
      */
     private boolean all;
     
-    public abstract File getSourceDir();
+    /**
+     * @parameter expression="${project}"
+     * @required
+     * @readonly
+     */
+    protected MavenProject project;
+    
+    public abstract List<String> getSourceDirectories() throws Exception;
     
     public abstract File getDestDir();
     
     public void execute() throws MojoExecutionException, MojoFailureException
     {   
-        // Firs thing to do is perform a sanity check on the mojo's parameters.
-        checkValidDirectory("sourceDir", getSourceDir());
+        // First thing to do is perform a sanity check on the mojo's parameters.
         checkValidDirectory("jythonHome", new File(jythonHome));
         
         // Cycle through all this plugin's artifacts until we find Jython.  Then add it to the classpath.
@@ -99,18 +108,25 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
         // Since Jython relies on .py files being installed on the local machine, we need a path
         // to that local installation.
         System.setProperty("python.home", jythonHome);
-        
-        
-        
+
         // Start building up the command and arguments for executing jythonc in its own process.
         final List<String> partialArgs = new ArrayList<String>();
         
         // We assume that "java" is on the system path.  At some point, however, we should build up a complete path to the binary.
         partialArgs.add("java");
         
-        // Make sure that the jython jar is on the classpath.
+        // Built out the the project classpath including the jython jar
+        String classpath = jythonHome + "/jython.jar";
+        try {
+            for (final Object dependency : project.getCompileClasspathElements()) {
+                classpath += ":" + (String)dependency;
+            }
+        } catch (DependencyResolutionRequiredException e) {
+            throw new MojoFailureException("An exception was thrown while building classpath!", e);
+        }
+
         partialArgs.add("-cp");
-        partialArgs.add(jythonHome + "/jython.jar");
+        partialArgs.add(classpath);
         
         // This is the main jython class we will be executing.
         partialArgs.add("org.python.util.jython");
@@ -120,8 +136,6 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
 
         // Disable the warning message about jythonc being deprecated.
         partialArgs.add("-i");
-        
-        
         
         // From here on out, we're passing additional arguments that the jythonc.py file expects to see.
         // org.python.util.jython will make sure that the jythonc.py file executes with the proper set of arguments.
@@ -144,41 +158,40 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
             partialArgs.add("--all");
         }
         
-        final List<String> args = new ArrayList<String>();
-        for (final File file: getJythonFiles(getSourceDir()))
-        {
-            try
-            {
-                args.clear();
-                args.addAll(partialArgs);
-                
-                final String path = file.getCanonicalPath();
-                final String packageName = extractPackage(file);
-                
-                // If the jython file has an implied package name, tell jythonc to use that
-                // package when generating the Java source file.
-                if (null != packageName)
-                {
-                    args.add("--package");
-                    args.add(packageName);
+        try {
+            final List<String> args = new ArrayList<String>();
+            for (final File file : findSource(getSourceDirectories(), "py")) {
+
+                try {
+                    args.clear();
+                    args.addAll(partialArgs);
+
+                    final String path = file.getCanonicalPath();
+                    final String packageName = extractPackage(file);
+
+                    // If the jython file has an implied package name, tell jythonc to use that
+                    // package when generating the Java source file.
+                    if (null != packageName) {
+                        args.add("--package");
+                        args.add(packageName);
+                    }
+
+                    // Finish off the command by passing the jython source file as the last argument.
+                    args.add(path);
+
+                    // TODO: (KJM 4/3/07) Compiling each file in its own process is a bit slow, but necessary right now to ensure correctness of package name. At some point, we should probably hash by package name and compile all files in a package at once.
+                    // Compile the jython source file.
+                    runJythonc(args);
+                } catch (final IOException e) {
+                    throw new MojoExecutionException("Failed to retrieve the path to a jython source file.", e);
+                } catch (final Exception e) {
+                    throw new MojoExecutionException("Failed to run jythonc.", e);
                 }
-                
-                // Finish off the command by passing the jython source file as the last argument.
-                args.add(path);
-                
-                // TODO: (KJM 4/3/07) Compiling each file in its own process is a bit slow, but necessary right now to ensure correctness of package name.  At some point, we should probably hash by package name and compile all files in a package at once.
-                // Compile the jython source file.
-                runJythonc(args);
             }
-            catch (final IOException e)
-            {
-                throw new MojoExecutionException("Failed to retrieve the path to a jython source file.", e);
-            }
-            catch (final Exception e)
-            {
-                throw new MojoExecutionException("Failed to run jythonc.", e);
-            }
+        } catch (Exception ex) {
+            throw new MojoExecutionException("No valid source directories found.", ex);
         }
+        
     }
     
     /**
@@ -192,36 +205,6 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
     }
     
     /**
-     * Retrieves all the jython source files in the given directory and all its subdirectories.
-     * 
-     * @param directory The directory to scan.
-     * 
-     * @return A list of all Jython source files contained in the directory.
-     */
-    private List<File> getJythonFiles(final File directory)
-    {
-        final List<File> ret = new ArrayList<File>();
-        
-        // Scan the directory for Jython files.
-        for (final File file : directory.listFiles(new SimpleFilenameFilter()))
-        {
-            // If the file is a directory, then recursively scan that directory.
-            if (file.isDirectory())
-            {
-                ret.addAll(getJythonFiles(file));
-            }
-            
-            // Otherwise, add the file to the returned output.
-            else
-            {
-                ret.add(file);
-            }
-        }
-        
-        return ret;
-    }
-    
-    /**
      * Extract the appropriate Java package to use for the Jython source file based
      * upon its directory structure.
      * 
@@ -231,18 +214,23 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
      * 
      * @throws IOException On file I/O errors.
      */
-    private String extractPackage(final File file) throws IOException
-    {
+    private String extractPackage(final File file) throws IOException, Exception {
         String ret = null;
         
         final String path = file.getCanonicalPath();
         
         // A file only has a package if "sourceDir" is not the directory in which the file is contained.
         // In this case, the package is the empty package, represented by null.
-        if (false == file.getParentFile().equals(getSourceDir()))
+        int srcDirectoryIndex = getSourceDirectories().indexOf(file.getParentFile());
+        if (srcDirectoryIndex == -1)
         {
-            ret = path.substring(getSourceDir().getCanonicalPath().length() + 1, path.indexOf(file.getName()) - 1);
-            ret = ret.replaceAll("\\" + File.separator, ".");
+            for (final String sourceDirectory : getSourceDirectories()) {
+                if (path.contains(sourceDirectory)) {
+                    File dir = new File(sourceDirectory);
+                    ret = path.substring(dir.getCanonicalPath().length() + 1, path.indexOf(file.getName()) - 1);
+                    ret = ret.replaceAll("\\" + File.separator, ".");
+                }
+            }
         }
         
         debug("Discovered the package: " + ret);
@@ -250,7 +238,7 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
         return ret;
     }
     
-    private void runJythonc(final List<String> args) throws IOException, InterruptedException
+    private void runJythonc(final List<String> args) throws IOException, InterruptedException, MojoFailureException
     {
         // Now that we've built up the command we want to run, set things up so it can run in its own process.                
         final StringBuffer cmd = new StringBuffer();
@@ -275,8 +263,10 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
             line = in.readLine();
         }
 
-        // Block until the jythonc process finishes executing.
-        debug("Jythonc status: " + p.waitFor());
+        int retVal = p.waitFor();
+        if (retVal != 0) {
+            throw new MojoFailureException("command line returned non-zero value:" + retVal);
+        }
     }
     
     /**
@@ -296,21 +286,50 @@ public abstract class AbstractCompilerMojo extends AbstractMojo
     }
     
     /**
-     * Simple filter so that we only deal with actual Jython source files.
-     * 
-     * @author Kevin Menard
+     * Finds all source files in a set of directories with a given extension. 
      */
-    private class SimpleFilenameFilter implements FilenameFilter
-    {
-        /**
-         * We accept all files that end with the ".py" extension or that are themselves directories.
-         */
-        public boolean accept(final File dir, final String name)
-        {
-            final File full = new File(dir, name);
-            
-            // TODO: (KJM 03/20/07) This should probably be configurable.
-            return name.endsWith(".py") || full.isDirectory();
-        }   
+    private List<File> findSource(List<String> list, String extension) {
+        List<File> sourceFiles = new ArrayList<File>();
+        for (String rootSourceDir : normalizeSourceRoots(list)) {
+            File dir = normalize(new File(rootSourceDir));
+            DirectoryScanner scanner = new DirectoryScanner();
+            scanner.setBasedir(dir);
+            scanner.setIncludes(new String[] { "**/*." + extension });
+            scanner.addDefaultExcludes();
+            scanner.scan();
+            String[] tmpFiles = scanner.getIncludedFiles();
+            for (String tmpLocalFile : tmpFiles) {               
+                File tmpAbsFile = normalize(new File(dir, tmpLocalFile));
+                sourceFiles.add(tmpAbsFile);
+            }
+        }
+        return sourceFiles;
     }
+    
+    /**
+     * This limits the source directories to only those that exist.
+     */
+    private List<String> normalizeSourceRoots(List<String> list) {
+        List<String> newCompileSourceRootsList = new ArrayList<String>();
+        if (list != null) {
+            // copy as I may be modifying it
+            for (String srcDir : list) {
+                File srcDirFile = normalize(new File(srcDir));
+                if (!newCompileSourceRootsList.contains( srcDirFile.getAbsolutePath() ) && srcDirFile.exists()) {
+                    newCompileSourceRootsList.add(srcDirFile.getAbsolutePath());
+                }
+            }
+        }
+        return newCompileSourceRootsList;
+    }
+    
+    protected File normalize(File srcDir) {
+        try {
+            srcDir = srcDir.getCanonicalFile();
+        } catch (IOException exc) {
+            srcDir = srcDir.getAbsoluteFile();
+        }
+        return srcDir;
+    }
+
 }

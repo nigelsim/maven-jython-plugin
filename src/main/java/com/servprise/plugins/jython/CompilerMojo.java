@@ -17,7 +17,7 @@
 package com.servprise.plugins.jython;
 
 import java.io.File;
-import java.io.IOException;
+import java.util.List;
 
 /**
  * Maven mojo to compile jython source files to Java class files.
@@ -46,14 +46,15 @@ public class CompilerMojo extends AbstractCompilerMojo
      */
     private File destDir;
 
-    
-    public File getSourceDir()
+    public List<String> getSourceDirectories() throws Exception
     {
-        try {
-            return sourceDir.getCanonicalFile();
-        } catch (IOException e) {
-            return sourceDir;
+        List<String> sources = project.getCompileSourceRoots();
+        //Quick fix in case the user has not added the "add-source" goal.
+        String jythonSourceDir = sourceDir.getCanonicalPath();
+        if (!sources.contains(jythonSourceDir)) {
+            sources.add(jythonSourceDir);
         }
+        return sources;
     }
 
     public File getDestDir()
